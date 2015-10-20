@@ -2,13 +2,15 @@ local _ = require 'shim'
 local json = require 'cjson'
 local store = require 'store'
 
--- http://nginx.org/en/docs/varindex.html
-
 local monitor = {
 	cacheSeconds = 5,
 	key = 'monitor.lua',
 	startTime = ngx.time()
 }
+
+local function log(...)
+	ngx.log(ngx.EMERG, _.dump(...))
+end
 
 local function newData()
 	return {
@@ -17,9 +19,8 @@ local function newData()
 	}
 end
 
--- 1445224734 = {1xx = 0, 2xx = 100, body_size = 1000000, total = 300, request_time = xxxx}
-
 local function newItem()
+	-- use in zone or upstream
 	return {
 		lasts = {}, -- cache by timestamp(second)
 		responses = {
@@ -34,7 +35,7 @@ local function newItem()
 end
 
 local function newSecond()
-	-- use second so we can clear old data easy
+	-- save data by second so we can clear old data easy
 	return {
 		['1xx'] = 0,
 		['2xx'] = 0,
@@ -49,8 +50,16 @@ local function newSecond()
 	}
 end
 
+local function clearOutdatedLasts(lasts, now)
+	now = now or tostring(ngx.time())
+	for key, val in pairs(lasts) do
+		if tonumber(now) - tonumber(key) > monitor.cacheSeconds then
+			lasts[key] = nil
+		end
+	end
+end
+
 local function fillItem(zone, data)
-	-- ngx.log(ngx.EMERG, tostring(111) .. tostring(data.status):sub(1, 1))
 	local statusKey = tostring(data.status):sub(1, 1) .. 'xx'
 	local responses = zone.responses
 	responses.total = responses.total + 1
@@ -58,19 +67,12 @@ local function fillItem(zone, data)
 
 	local now = tostring(ngx.time()) -- avoid excessively sparse array
 	local lasts = zone.lasts
-	local last = lasts[now]
-	if not last then
-		-- a new second
-		lasts[now] = newSecond()
-		last = lasts[now]
 
-		-- clear old data
-		for key, val in pairs(lasts) do
-			if tonumber(now) - tonumber(key) > monitor.cacheSeconds then
-				lasts[key] = nil
-			end
-		end
+	if not lasts[now] then
+		clearOutdatedLasts(lasts, now)
+		lasts[now] = newSecond()
 	end
+	local last = lasts[now]
 
 	last.total = last.total + 1
 	last[statusKey] = last[statusKey] + 1
@@ -78,7 +80,7 @@ local function fillItem(zone, data)
 	last.request_length = last.request_length + data.request_length
 	last.request_time = last.request_time + data.request_time
 
-	-- detail status, always important
+	-- detail status, always important, e.g. 204, 499
 	if not last[data.status] then
 		last[data.status] = 0
 	end
@@ -86,32 +88,27 @@ local function fillItem(zone, data)
 end
 
 monitor.incr = function(key)
-	-- incr log
+	-- incr data
 	local data = store.get(monitor.key)
 	if not data then
 		data = newData()
 	end
 
-	if type(data) == 'string' then
-		store.remove(monitor.key)
-		return monitor.incr(key)
-	end
-
+	-- http://nginx.org/en/docs/varindex.html
 	local httpData = {
   		  status = ngx.var.status
 		, body_bytes_sent = ngx.var.body_bytes_sent
 		, request_length = ngx.var.request_length
 		, request_time = ngx.var.request_time
 	}
-	ngx.log(ngx.EMERG, tostring(111) .. tostring(json.encode(httpData)))
-	local zone = data.zones[key]
-	if not zone then
+
+	if not data.zones[key] then
 		data.zones[key] = newItem()
-		zone = data.zones[key]
 	end
+	local zone = data.zones[key]
+
 	fillItem(zone, httpData)
 
-	-- ngx.log(ngx.EMERG, tostring(111) .. tostring(json.encode(data)))
 	store.set(monitor.key, data)
 end
 
@@ -137,10 +134,36 @@ local function getDuration()
 	return ret
 end
 
+local function outputStatus(status)
+	local output
+	local mime
+	local query = ngx.req.get_uri_args()
+	local format = query.format
+	local path = query.path
+	if not _.empty(path) then
+		path = _.split(path, '.', true)
+		status = _.get(status, path)
+	end
+
+	if 'json' == format then
+		mime = 'text/application'
+		output = json.encode(status)
+	elseif 'plain' == format then
+		mime = 'text/plain'
+		output = tostring(status)
+	else
+		-- TODO
+		-- default is human readable dashboard
+		mime = 'text/html'
+		output = 'coming soon'
+	end
+	ngx.header['Content-Type'] = mime
+	ngx.say(output)
+
+end
+
 monitor.status = function()
-	-- dashboard(realtime), json, string
 	-- not care performance in `status`
-	ngx.sleep(0.3)
 	local ret = {
 		  nginx_version = ngx.var.nginx_version
 		, address = ngx.var.server_addr
@@ -150,19 +173,30 @@ monitor.status = function()
 		, cacheSeconds = monitor.cacheSeconds
 	}
 	local data = store.get(monitor.key) or {}
-	-- ngx.log(ngx.EMERG, tostring(111) .. tostring(json.encode(data.zones)))
+
 	ret.zones = _.mapValues(data.zones, function(zone)
+		clearOutdatedLasts(zone.lasts) -- always clear outdated when get status
 		zone = zone or {}
 		local ret = _.only(zone, 'responses')
 		local duration = getDuration()
 		local total = sumLasts(zone.lasts, 'total')
-		ret.request_per_second = total / duration
-		ret.avg_response_time = sumLasts(zone.lasts, 'request_time') / total
-		ret.avg_body_bytes_sent = sumLasts(zone.lasts, 'body_bytes_sent') / total
+
+		if 0 == duration or 0 == total then
+			-- care zero
+			ret.request_per_second = 0
+			ret.avg_response_time = 0
+			ret.avg_body_bytes_sent = 0
+			ret['2xx_percent'] = 0
+		else
+			ret.request_per_second = total / duration
+			ret.avg_response_time = sumLasts(zone.lasts, 'request_time') / total
+			ret.avg_body_bytes_sent = sumLasts(zone.lasts, 'body_bytes_sent') / total
+			ret['2xx_percent'] = sumLasts(zone.lasts, '2xx') / total
+		end
 		return ret
 	end)
-	ngx.header['Content-Type'] = 'application/json'
-	ngx.say(json.encode(ret))
+
+	outputStatus(ret)
 end
 
 return monitor

@@ -1,7 +1,7 @@
 monitor.lua
 ===
 
-Open source and fast nginx monitor
+Monitor nginx with status information
 
 
 Usage
@@ -9,7 +9,7 @@ Usage
 
 ```nginx
 http {
-	lua_shared_dict store 10m; # rely on store.lua
+	lua_shared_dict store 10m; # rely on `store.lua`
 	init_by_lua "monitor = require 'monitor'";
 	log_by_lua "monitor.incr()";
 
@@ -19,6 +19,29 @@ http {
 
 }
 ```
+
+Data Format
+---
+
+### Dashboard
+
+Default shows dashboard (TODO), refresh by itself
+
+### json
+
+`/status?format=json` shows status with json
+
+### plain
+
+`/status?format=plain` shows status with plain string
+
+
+Path param
+---
+
+You can get the one data by path param
+
+`/status?format=plain&path=`
 
 Advanced
 ---
