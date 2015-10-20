@@ -100,7 +100,15 @@ monitor.incr = function(key)
 		, body_bytes_sent = ngx.var.body_bytes_sent
 		, request_length = ngx.var.request_length
 		, request_time = ngx.var.request_time
+		, upstream_addr = ngx.var.upstream_addr
+		, upstream_response_time = ngx.var.upstream_response_time
+		, upstream_status = ngx.var.upstream_status
+		, upstream_response_length = ngx.var.upstream_response_length
 	}
+
+	-- TODO handle upstream
+
+	log(httpData)
 
 	if not data.zones[key] then
 		data.zones[key] = newItem()
