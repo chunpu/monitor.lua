@@ -11,7 +11,7 @@ Usage
 http {
 	lua_shared_dict store 10m; # rely on `store.lua`
 	init_by_lua "monitor = require 'monitor'";
-	log_by_lua "monitor.incr()";
+	log_by_lua "monitor.group()";
 
 	location /status {
 		content_by_lua "monitor.status()";

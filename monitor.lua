@@ -87,8 +87,23 @@ local function fillItem(zone, data)
 	last[data.status] = last[data.status] + 1
 end
 
-monitor.incr = function(key)
+monitor.group_by_path = function(count)
+	local key = ngx.var.uri
+	if count then
+		key = _.split(key, '/', true)
+		key = key[count + 1] -- first is ''
+	end
+	return monitor.group(key)
+end
+
+monitor.group_by_host = function()
+	local key = ngx.var.host .. ':' .. ngx.var.server_port
+	return monitor.group(key)
+end
+
+monitor.group = function(key)
 	-- incr data
+	key = tostring(key)
 	local data = store.get(monitor.key)
 	if not data then
 		data = newData()
@@ -108,7 +123,7 @@ monitor.incr = function(key)
 
 	-- TODO handle upstream
 
-	log(httpData)
+	-- log(httpData)
 
 	if not data.zones[key] then
 		data.zones[key] = newItem()
@@ -118,6 +133,12 @@ monitor.incr = function(key)
 	fillItem(zone, httpData)
 
 	store.set(monitor.key, data)
+end
+
+local function prettyNumber(num)
+	-- keep 3
+	num = math.floor(num * 1000)
+	return num / 1000
 end
 
 local function sumLasts(lasts, key)
@@ -146,6 +167,12 @@ local function outputStatus(status)
 	local output
 	local mime
 	local query = ngx.req.get_uri_args()
+
+	if 'clear' == query.method then
+		store.remove(monitor.key)
+		return ngx.say('clear success')
+	end
+
 	local format = query.format
 	local path = query.path
 	if not _.empty(path) then
@@ -196,10 +223,11 @@ monitor.status = function()
 			ret.avg_body_bytes_sent = 0
 			ret['2xx_percent'] = 0
 		else
-			ret.request_per_second = total / duration
-			ret.avg_response_time = sumLasts(zone.lasts, 'request_time') / total
-			ret.avg_body_bytes_sent = sumLasts(zone.lasts, 'body_bytes_sent') / total
-			ret['2xx_percent'] = sumLasts(zone.lasts, '2xx') / total
+			-- TODO pretty number
+			ret.request_per_second = prettyNumber(total / duration)
+			ret.avg_response_time = prettyNumber(sumLasts(zone.lasts, 'request_time') / total)
+			ret.avg_body_bytes_sent = prettyNumber(sumLasts(zone.lasts, 'body_bytes_sent') / total)
+			ret['2xx_percent'] = prettyNumber(sumLasts(zone.lasts, '2xx') / total)
 		end
 		return ret
 	end)
