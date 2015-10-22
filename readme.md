@@ -41,9 +41,17 @@ Path param
 
 You can get the one data by path param
 
-`/status?format=plain&path=`
+`/status?format=plain&path=zones.zonename.request_per_second`
 
-Advanced
+Other Tips
 ---
 
 `monitor.lua` will cache last 5 seconds data by default, you can change it by `monitor.cacheSeconds = 6` to cache 6 seconds data
+
+Never worry about if sum number is too big, because lua max number is `math.pow(2, 1023) * 1.9999...`, even your qps is billion, you can run billion years without restart
+
+
+Performance
+---
+
+

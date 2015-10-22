@@ -3,7 +3,7 @@ local json = require 'cjson'
 local store = require 'store'
 
 local monitor = {
-	cacheSeconds = 5,
+	cacheSeconds = 5, -- without current time
 	key = 'monitor.lua',
 	startTime = ngx.time()
 }
@@ -51,9 +51,11 @@ local function newSecond()
 end
 
 local function clearOutdatedLasts(lasts, now)
-	now = now or tostring(ngx.time())
+	now = tonumber(now or ngx.time())
 	for key, val in pairs(lasts) do
-		if tonumber(now) - tonumber(key) > monitor.cacheSeconds then
+		-- now: xxxx9, caches 2s, xxxx8 and xxxx7 is ok, xxxx6 will be cleared
+		local delta = now - tonumber(key) -- in most situation delta == monitor.cacheSeconds + 1
+		if delta > monitor.cacheSeconds then
 			lasts[key] = nil
 		end
 	end
@@ -65,7 +67,7 @@ local function fillItem(zone, data)
 	responses.total = responses.total + 1
 	responses[statusKey] = responses[statusKey] + 1
 
-	local now = tostring(ngx.time()) -- avoid excessively sparse array
+	local now = tostring(ngx.time()) -- use string key to avoid excessively sparse array
 	local lasts = zone.lasts
 
 	if not lasts[now] then
@@ -145,19 +147,25 @@ local function sumLasts(lasts, key)
 	-- ignore the key is now
 	local now = ngx.time()
 	local ret = 0
+	local count = 0
 	_.forIn(lasts, function(last, time)
-		if tostring(time) ~= now then
+		if tonumber(time) ~= now then
+			-- ignore now
 			ret = ret + last[key]
+			count = count + 1
 		end
 	end)
-	return ret
+	return ret, count
 end
 
 local function getDuration()
-	local ret = monitor.cacheSeconds - 1 -- -1 means ignore now
+	local ret = monitor.cacheSeconds
 	local min = ngx.time() - monitor.startTime
 	if min < ret then
 		-- just start
+		if min < 1 then
+			return 1
+		end
 		return min
 	end
 	return ret
@@ -214,7 +222,7 @@ monitor.status = function()
 		zone = zone or {}
 		local ret = _.only(zone, 'responses')
 		local duration = getDuration()
-		local total = sumLasts(zone.lasts, 'total')
+		local total, count = sumLasts(zone.lasts, 'total')
 
 		if 0 == duration or 0 == total then
 			-- care zero
@@ -223,7 +231,6 @@ monitor.status = function()
 			ret.avg_body_bytes_sent = 0
 			ret['2xx_percent'] = 0
 		else
-			-- TODO pretty number
 			ret.request_per_second = prettyNumber(total / duration)
 			ret.avg_response_time = prettyNumber(sumLasts(zone.lasts, 'request_time') / total)
 			ret.avg_body_bytes_sent = prettyNumber(sumLasts(zone.lasts, 'body_bytes_sent') / total)
